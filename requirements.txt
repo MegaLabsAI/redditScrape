@@ -1,0 +1,7 @@
+boto3    # AWS SDK for Python (S3 and other AWS services)
+pandas         # Data manipulation and analysis library
+pyarrow       # Apache Arrow and Parquet integration
+openai       # OpenAI API client
+praw       # Python Reddit API Wrapper
+prawcore
+python-json-logger
