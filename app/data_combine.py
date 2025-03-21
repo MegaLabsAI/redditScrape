@@ -1,138 +1,72 @@
-
 import pandas as pd
-from io import BytesIO
-import pyarrow.parquet as pq
-
-
 
 class DataCombiner:
     def __init__(self):
-        from app.aws import MyApp  # Import only when needed to avoid circular dependency
+        from app.aws import MyApp  # Avoid circular dependency by importing here
         self.app = MyApp()
-    #    self.existing_df = self.app.retrieve_data_from_s3()
-    #    self.data = RedditClient()
 
-       
     def fetch_new_reddit_data(self):
         """Fetch new Reddit submissions and top posts."""
-        from app.reddit_data_extraction import RedditClient  # Import within method to avoid circular import
+        from app.reddit_data_extraction import RedditClient  # Avoid circular imports
         reddit_client = RedditClient()
         new_submissions_df = reddit_client.retrieve_submissions()
-        new_top_df =   reddit_client.retrieve_top_submissions()
+        new_top_df = reddit_client.retrieve_top_submissions()
 
-        # Combine the new submissions and top posts into a single DataFrame
+        # Combine new submissions and top posts into a single DataFrame
         all_posts_df = pd.concat([new_submissions_df, new_top_df], ignore_index=True)
         return all_posts_df
 
-    #    self.new_submissions_df = self.data.retrieve_submissions()
-    #    self.new_top_df = self.data.retrieve_top_submissions()
-       
-    #    self.all_posts_df = pd.concat([self.new_submissions_df, self.new_top_df], ignore_index=True)
-
-
     def combine_data(self):
-        """Combine new Reddit data with existing data in S3, removing duplicates."""
-        try:
-            # Step 1: Read existing data from S3
+       """Combine new Reddit data with existing data from S3, removing duplicates."""
+       try:
             existing_df = self.app.retrieve_data_from_s3()
             new_data = self.fetch_new_reddit_data()
+            existing_ids = self.app.load_existing_ids()
+            existing_hashes = self.app.load_existing_hashes()
 
-        except Exception as e:
-            print(f"Error in data combination: {e}")
-            raise e
-        try:
-            # Step 2: Ensure the new data's 'score' column is cleaned up
-            new_data['score'] = new_data['score'].fillna(0).apply(lambda x: round(x))
-            existing_df['score'] = existing_df['score'].fillna(0).apply(lambda x: round(x))
-        except Exception as e:
-            print(f"Error in data combination: {e}")
-            raise e
-        try:
-            # Step 3: Ensure the 'subreddit' column is a string
-            new_data['subreddit'] = new_data['subreddit'].astype(str)
-            existing_df['subreddit'] = existing_df['subreddit'].astype(str)
-        except Exception as e:
-            print(f"Error in data combination: {e}")
-            raise e
-        try:
-            # Step 4: Ensure the 'num_comments' column is an integer
-           
-           # Fill NaN values with 0 (or another value), then convert to int
-            new_data['num_comments'] = new_data['num_comments'].fillna(0).astype(int).round(5)
-            existing_df['num_comments'] = existing_df['num_comments'].fillna(0).astype(int).round(5)
+            # Ensure 'id' column exists
+            if 'id' not in new_data.columns or 'id' not in existing_df.columns:
+                raise ValueError("Missing 'id' column in new or existing data.")
 
-        except Exception as e:
-            print(f"Error in data combination: {e}")
-            raise e
-        try:
+            # Remove duplicates using 'id' check
+            new_data = new_data[~new_data['id'].isin(existing_ids)].copy()
 
-            # Step 5: Identify duplicates based on 'id' and 'body' columns
-            existing_ids = set(existing_df['id'])
-            new_ids = set(new_data['id'])
-            duplicate_ids = existing_ids.intersection(new_ids)
+            if new_data.empty:
+                print("No new unique Reddit posts found. Nothing to save.")
+                return existing_df  # Return existing data unchanged
 
-            existing_bodies = set(existing_df['body'])
-            new_bodies = set(new_data['body'])
-            duplicate_bodies = existing_bodies.intersection(new_bodies)
+            # Generate hashes for tracking data integrity
+            new_data['hash'] = new_data['id'].apply(self.app.generate_hash)
 
-            # Step 6: Filter out rows where both 'id' and 'body' match existing data
-            filtered_df = new_data[
-                ~(new_data['id'].isin(duplicate_ids) & new_data['body'].isin(duplicate_bodies))
-            ]
-            filtered_df.loc[:, 'score'] = filtered_df['score'].apply(lambda x: round(x))
+            # Ensure numeric columns are cleaned
+            for col in ['score', 'num_comments']:
+                if col in new_data.columns:
+                    new_data[col] = new_data[col].fillna(0).astype(int)
+                if col in existing_df.columns:
+                    existing_df[col] = existing_df[col].fillna(0).astype(int)
 
-           
-            return filtered_df
+            # Convert subreddit column to string
+            if 'subreddit' in new_data.columns:
+                new_data['subreddit'] = new_data['subreddit'].astype(str)
+            if 'subreddit' in existing_df.columns:
+                existing_df['subreddit'] = existing_df['subreddit'].astype(str)
 
-        except Exception as e:
-            print(f"Error in data combination: {e}")
-            raise e
-
-    
-
-    # def combine_data(self):
-
-       
-    #     """Combine new Reddit data with existing data in S3, removing duplicates."""
-    #     try:
-    #         # Step 1: Read existing data from S3
-    #         existing_df = self.app.retrieve_data_from_s3()
-
-    #         # Step 2: Combine new submissions and top submissions
+            # Append new and non-duplicate data
+            combined_df = pd.concat([existing_df, new_data], ignore_index=True)
             
+            # Save updated IDs and hashes
+            existing_ids.update(new_data['id'].tolist())
+            existing_hashes.update(new_data['hash'].tolist())
+            self.app.save_ids_to_s3(existing_ids)
+            self.app.save_hashes_to_s3(existing_hashes)
 
-    #         # Step 3: Handle any missing or NaN values in the 'score' column
-    #         self.all_posts_df['score'] = self.all_posts_df['score'].fillna(0).apply(lambda x: round(x))
-    #         existing_df['score'] = existing_df['score'].fillna(0).apply(lambda x: round(x))
+            print(f"Successfully combined data. Total records: {len(combined_df)}")
+            return combined_df
 
-    #         # Step 4: Ensure 'subreddit' column is of type string
-    #         self.all_posts_df['subreddit'] = self.all_posts_df['subreddit'].astype(str)
-    #         existing_df['subreddit'] = existing_df['subreddit'].astype(str)
+       except Exception as e:
+            print(f"Error in data combination: {e}")
+            raise e
 
-    #         # Step 5: Ensure 'num_comments' column is in correct precision format (as integer)
-    #         self.all_posts_df['num_comments'] = self.all_posts_df['num_comments'].astype(int).round(5)
-    #         existing_df['num_comments'] = existing_df['num_comments'].astype(int).round(5)
 
-    #         # Step 6: Identify duplicates based on 'id' and 'body' columns
-    #         existing_ids = set(existing_df['id'])
-    #         new_ids = set(self.all_posts_df['id'])
-    #         duplicate_ids = existing_ids.intersection(new_ids)
 
-    #         existing_bodies = set(existing_df['body'])
-    #         new_bodies = set(self.all_posts_df['body'])
-    #         duplicate_bodies = existing_bodies.intersection(new_bodies)
 
-    #         # Step 7: Filter out rows where both 'id' and 'body' match existing data
-    #         filtered_df = self.all_posts_df[
-    #             ~(self.all_posts_df['id'].isin(duplicate_ids) & self.all_posts_df['body'].isin(duplicate_bodies))
-    #         ]
-            
-
-    #         return filtered_df
-
-    #     except Exception as e:
-    #         print(f"Error in data combination: {e}")
-    #         raise e
-        
-
-    

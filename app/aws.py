@@ -5,7 +5,7 @@ import pandas as pd
 import json
 from io import BytesIO
 
-
+import hashlib
 
 
 class MyConfig:
@@ -20,8 +20,6 @@ class MyConfig:
 
         # Load AWS parameters from SSM
         self.aws_params = self.load_aws_parameters()
-
-     
 
     def load_aws_parameters(self):
         # Define the names of the parameters you want to retrieve
@@ -59,16 +57,11 @@ class MyApp:
         self.config = MyConfig() # Configuration loaded during initialization
       
         self.aws = self.config.aws_params
-
-
         self.s3_bucket = self.aws.get('s3_bucket').strip()
         self.s3_key = self.aws.get('s3_key').strip()
         self.s3_conf_bucket = self.aws.get('s3_conf_bucket').strip()
         self.s3_conf_key = self.aws.get('s3_conf_key').strip()
-     
         self.openai = self.aws['OPENAI_API_KEY'].strip()
-
-
         # Initialize the S3 client as None
         self.s3 = None
 
@@ -148,14 +141,9 @@ class MyApp:
 
 
         try:
-            existing_df = self.retrieve_data_from_s3()
-
-            combined_df = pd.concat([existing_df, df_summary], ignore_index=True, axis=0)
-            combined_df['score'] = combined_df['score'].replace('04-04-2024', 0)
-            combined_df['score'] = combined_df['score'].fillna(0).astype(int)
-            combined_df['score'] = combined_df['score'].fillna(0).apply(lambda x: round(x))  # Adjust precision if needed
+            
             buffer = BytesIO()
-            combined_df.to_parquet(buffer, engine='pyarrow', index=False)
+            df_summary.to_parquet(buffer, engine='pyarrow', index=False)
             buffer.seek(0)
             self.connect_to_s3()  # Ensure connection is established
             self.s3.upload_fileobj(buffer, self.s3_bucket, self.s3_key)
@@ -206,6 +194,40 @@ class MyApp:
         finally:
         # Close the buffer
             buffer.close()
+
+    
+    def load_existing_ids(self):
+    
+        """Load existing Reddit post IDs from S3."""
+        try:
+            self.connect_to_s3()
+            response = self.s3.get_object(Bucket=self.s3_bucket, Key="existing_ids.json")
+            return set(json.loads(response["Body"].read().decode("utf-8")))
+        except self.s3.exceptions.NoSuchKey:
+            return set()
+
+    def load_existing_hashes(self):
+        """Load existing post hashes from S3."""
+        try:
+            self.connect_to_s3()
+            response = self.s3.get_object(Bucket=self.s3_bucket, Key="existing_hashes.json")
+            return set(json.loads(response["Body"].read().decode("utf-8")))
+        except self.s3.exceptions.NoSuchKey:
+            return set()
+
+    def save_ids_to_s3(self, existing_ids):
+        """Save updated Reddit post IDs to S3."""
+        self.connect_to_s3()
+        self.s3.put_object(Bucket=self.s3_bucket, Key="existing_ids.json", Body=json.dumps(list(existing_ids)))
+
+    def save_hashes_to_s3(self, existing_hashes):
+        """Save updated Reddit post hashes to S3."""
+        self.connect_to_s3()
+        self.s3.put_object(Bucket=self.s3_bucket, Key="existing_hashes.json", Body=json.dumps(list(existing_hashes)))
+
+    def generate_hash(self, entry_id):
+        """Generate a SHA-256 hash using only `id`."""
+        return hashlib.sha256(entry_id.encode()).hexdigest()
         
 
 
