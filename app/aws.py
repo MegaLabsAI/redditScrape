@@ -1,6 +1,8 @@
 import boto3
 # from app import config
 import logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 import pandas as pd
 import json
 from io import BytesIO

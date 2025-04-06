@@ -1,5 +1,9 @@
 import pandas as pd
 import logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+
 class DataCombiner:
     def __init__(self):
         from app.aws import MyApp  # Avoid circular dependency by importing here

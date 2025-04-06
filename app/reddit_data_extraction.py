@@ -1,120 +1,91 @@
-
-import praw
-import boto3
 import time
-
-import prawcore
+import logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+from datetime import datetime, timedelta, timezone
 import pandas as pd
-import json
-from datetime import datetime, timedelta
-# from app.aws import MyConfig, MyApp
-
-
-
-
+import praw
+import prawcore
 
 class RedditClient:
     def __init__(self):
-        from app.aws import MyApp  # Import within method to avoid circular import
+        from app.aws import MyApp
         self.app = MyApp()
         self.reddit = praw.Reddit(
-            client_id= self.app.aws['red_client_id'],
-            client_secret= self.app.aws['red_client_secret'],
+            client_id=self.app.aws['red_client_id'],
+            client_secret=self.app.aws['red_client_secret'],
             user_agent=self.app.aws['red_user_agent'],
             check_for_async=False
         )
         self.reddit_links = self.app.retrive_redlist_from_s3()
 
+    def get_top_comments(self, post, n=3):
+        try:
+            post.comments.replace_more(limit=0)
+
+            # Only keep comment objects with a .body attribute
+            comment_bodies = [c for c in post.comments if hasattr(c, "body")]
+
+            # Sort by score and pick top n
+            top_comments = sorted(comment_bodies, key=lambda c: c.score, reverse=True)[:n]
+
+            return "\n\n".join(c.body.strip() for c in top_comments)
         
+        except Exception as e:
+            logging.warning(f"Failed to fetch comments for post {post.id}: {e}")
+            return ""
 
 
-    def retrieve_submissions(self,   days_ago=1,max_retries=3):
-        current_time = datetime.now()
-        seven_days_ago = current_time - timedelta(days_ago)
+    def retrieve_posts(self, mode="hot", days_ago=1, max_retries=3):
+        current_time = datetime.now(timezone.utc)
+        time_cutoff = current_time - timedelta(days=days_ago)
         all_posts = []
-        
 
         for topic in self.reddit_links:
             retries = 0
             while retries <= max_retries:
                 try:
-                    ml_subreddit = self.reddit.subreddit(topic)
+                    subreddit = self.reddit.subreddit(topic)
+                    post_generator = getattr(subreddit, mode)(limit=1000)
                     subreddit_posts = []
 
-                    for post in ml_subreddit.hot(limit=100000):
+                    for post in post_generator:
                         if post.selftext in [None, '[deleted]', '[removed]'] or post.stickied:
                             continue
 
-                        if len(post.selftext) >= 35 and datetime.utcfromtimestamp(post.created_utc) >= seven_days_ago:
-                            time.sleep(2)
+                        created_time = datetime.fromtimestamp(post.created_utc, tz=timezone.utc)
+                        if len(post.selftext) < 35 or created_time < time_cutoff:
+                            continue
 
-                            subreddit_posts.append({
-                                'title': post.title,
-                                'score': post.score,
-                                'id': post.id,
-                                'subreddit': str(post.subreddit),
-                                'url': post.url,
-                                'num_comments': post.num_comments,
-                                'body': post.selftext,
-                                'created': datetime.utcfromtimestamp(post.created).strftime('%Y-%m-%d %H:%M:%S')
-                                
-                            })
+                        top_comments = top_comments = self.get_top_comments(post) if post.num_comments > 0 else ""
+
+
+                        subreddit_posts.append({
+                            'title': post.title,
+                            'score': post.score,
+                            'id': post.id,
+                            'subreddit': str(post.subreddit),
+                            'url': post.url,
+                            'num_comments': post.num_comments,
+                            'body': post.selftext,
+                            'top_comments': top_comments,
+                            'created': datetime.fromtimestamp(post.created, tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
+                        })
 
                     all_posts.extend(subreddit_posts)
-                    break  # Break out of the retry loop on success
+                    break  # Success
 
                 except prawcore.exceptions.ServerError:
                     retries += 1
-                    time.sleep(3)  # Wait before retrying
+                    time.sleep(3)
                 except Exception as e:
-                    print(f"Failed to retrieve data for subreddit {topic}. Error: {e}")
-                    break  # Skip to the next subreddit
+                    logging.error(f"Failed to retrieve data for subreddit {topic}. Error: {e}")
+                    break
 
         return pd.DataFrame(all_posts)
+
+    def retrieve_submissions(self, max_retries=3):
+        return self.retrieve_posts(mode="hot", max_retries=max_retries)
 
     def retrieve_top_submissions(self, max_retries=3):
-
-
-        # This would be similar to retrieve_submissions but uses the subreddit.top() method
-        current_time = datetime.now()
-        seven_days_ago = current_time - timedelta(days=1)
-        all_posts = []
-
-        for topic in self.reddit_links:
-            retries = 0
-            while retries <= max_retries:
-                try:
-                    ml_subreddit = self.reddit.subreddit(topic)
-                    subreddit_posts = []
-
-                    for post in ml_subreddit.top(limit=100000):
-                        if post.selftext in [None, '[deleted]', '[removed]'] or post.stickied:
-                            continue
-
-                        if len(post.selftext) >= 35 and datetime.utcfromtimestamp(post.created_utc) >= seven_days_ago:
-                            time.sleep(2)
-                
-
-                            subreddit_posts.append({
-                                'title': post.title,
-                                'score': post.score,
-                                'id': post.id,
-                                'subreddit': str(post.subreddit),
-                                'url': post.url,
-                                'num_comments': post.num_comments,
-                                'body': post.selftext,
-                                'created': datetime.utcfromtimestamp(post.created).strftime('%Y-%m-%d %H:%M:%S')
-                            
-                            })
-
-                    all_posts.extend(subreddit_posts)
-                    break  # Break out of the retry loop on success
-
-                except prawcore.exceptions.ServerError:
-                    retries += 1
-                    time.sleep(3)  # Wait before retrying
-                except Exception as e:
-                    print(f"Failed to retrieve data for subreddit {topic}. Error: {e}")
-                    break  # Skip to the next subreddit
-
-        return pd.DataFrame(all_posts)
+        return self.retrieve_posts(mode="top", max_retries=max_retries)
