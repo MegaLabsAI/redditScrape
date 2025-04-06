@@ -1,11 +1,11 @@
 import boto3
 # from app import config
-from numpy import astype
+import logging
 import pandas as pd
 import json
 from io import BytesIO
 
-import hashlib
+
 
 
 class MyConfig:
@@ -118,9 +118,9 @@ class MyApp:
 
             # print(config_data)
         except boto3.exceptions.S3UploadFailedError as e:
-            print(f"Failed to retrieve object: {str(e)}")
+            logging.error(f"Failed to retrieve object: {str(e)}")
         except Exception as e:
-            print(f"An error occurred: {str(e)}")
+            logging.error(f"An error occurred: {str(e)}")
         
             
 
@@ -131,19 +131,19 @@ class MyApp:
     def upload_data_to_s3(self):
         """Upload the prepared DataFrame to AWS S3."""
         from app.data_combine import DataCombiner  # Import within the method to avoid circular import
-        from app.summarizer import Summarizer      # Import within the method to avoid circular import
+            # Import within the method to avoid circular import
 
         data_combiner = DataCombiner()
-        summarizer = Summarizer()
+        
         
         data_combine = data_combiner.combine_data()
-        df_summary =   summarizer.final_sumamry(data_combine)
+        
 
 
         try:
             
             buffer = BytesIO()
-            df_summary.to_parquet(buffer, engine='pyarrow', index=False)
+            data_combine.to_parquet(buffer, engine='pyarrow', index=False)
             buffer.seek(0)
             self.connect_to_s3()  # Ensure connection is established
             self.s3.upload_fileobj(buffer, self.s3_bucket, self.s3_key)
@@ -171,7 +171,7 @@ class MyApp:
                 # Add the new link to the reddit_links list
                 json_data['reddit_links'].append(new_link)
             else:
-                print(f"Link '{new_link}' already exists in the list.")
+                logging.info(f"Link '{new_link}' already exists in the list.")
                 return
             
             # Convert updated JSON data back to string format
@@ -186,10 +186,10 @@ class MyApp:
                 ContentType='application/json'  # Ensure the content type is JSON
             )
             
-            print(f"Successfully updated reddit_links and uploaded to s3://{self.s3_conf_bucket}/{self.s3_conf_key}")
+            logging.info(f"Successfully updated reddit_links and uploaded to s3://{self.s3_conf_bucket}/{self.s3_conf_key}")
 
         except Exception as e:
-            print(f"Error: Failed to update and upload reddit_links to S3: {e}")
+            logging.error(f"Error: Failed to update and upload reddit_links to S3: {e}")
             raise Exception(f"Failed to update and upload reddit_links to S3: {e}")
         finally:
         # Close the buffer
@@ -206,28 +206,16 @@ class MyApp:
         except self.s3.exceptions.NoSuchKey:
             return set()
 
-    def load_existing_hashes(self):
-        """Load existing post hashes from S3."""
-        try:
-            self.connect_to_s3()
-            response = self.s3.get_object(Bucket=self.s3_bucket, Key="existing_hashes.json")
-            return set(json.loads(response["Body"].read().decode("utf-8")))
-        except self.s3.exceptions.NoSuchKey:
-            return set()
+    
 
     def save_ids_to_s3(self, existing_ids):
         """Save updated Reddit post IDs to S3."""
         self.connect_to_s3()
-        self.s3.put_object(Bucket=self.s3_bucket, Key="existing_ids.json", Body=json.dumps(list(existing_ids)))
+        buffer = BytesIO(json.dumps(list(existing_ids)).encode("utf-8"))
+        self.s3.put_object(Bucket=self.s3_bucket, Key="existing_ids.json", Body=buffer)
+        buffer.close()
 
-    def save_hashes_to_s3(self, existing_hashes):
-        """Save updated Reddit post hashes to S3."""
-        self.connect_to_s3()
-        self.s3.put_object(Bucket=self.s3_bucket, Key="existing_hashes.json", Body=json.dumps(list(existing_hashes)))
-
-    def generate_hash(self, entry_id):
-        """Generate a SHA-256 hash using only `id`."""
-        return hashlib.sha256(entry_id.encode()).hexdigest()
+    
         
 
 
