@@ -26,9 +26,11 @@ class DataCombiner:
     def combine_data(self):
        """Combine new Reddit data with existing data from S3, removing duplicates."""
        try:
+        
             existing_df = self.app.retrieve_data_from_s3()
             new_data = self.fetch_new_reddit_data()
             existing_ids = self.app.load_existing_ids()
+            existing_ids = set(existing_df['id'])
             
 
             # Ensure 'id' column exists
